@@ -7,7 +7,7 @@ module.exports = (env) ->
   class BLEPlugin extends env.plugins.Plugin
     init: (app, @framework, @config) =>
       @debug =  @config.debug
-      @deviceDebug = false
+      @deviceDebug = @config.deviceDebug
       @devices = []
       @peripheralNames = []
       @discoveredPeripherals = []
@@ -45,8 +45,7 @@ module.exports = (env) ->
         env.logger.debug 'stateChange %s', state
         if state == 'poweredOn'
           setInterval( =>
-            if @deviceDebug || @devices?.length > 0
-              @startScanning()
+            @startScanning()
           , 60000)
           @startScanning()
         else
@@ -57,8 +56,9 @@ module.exports = (env) ->
       @peripheralNames.push name
 
     startScanning: ->
-      env.logger.debug 'Scan for devices'
-      @noble.startScanning([], true)
+      if @deviceDebug || @devices?.length > 0
+        env.logger.debug 'Scan for devices'
+        @noble.startScanning([], true)
 
     stopScanning: ->
       @noble.stopScanning()
