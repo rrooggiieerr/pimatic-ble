@@ -10,7 +10,7 @@
     "LICENSE"
   ],
   "license": "GPL-2.0",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "homepage": "https://github.com/josecastroleon/pimatic-ble",
   "configSchema": "ble-config-schema.coffee",
   "dependencies": {
