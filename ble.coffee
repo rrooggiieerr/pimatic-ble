@@ -1,6 +1,5 @@
 module.exports = (env) ->
   Promise = env.require 'bluebird'
-  assert = env.require 'cassert'
   
   events = require 'events'
 
@@ -9,8 +8,9 @@ module.exports = (env) ->
       @debug =  @config.debug
       @deviceDebug = @config.deviceDebug
       @devices = []
-      @peripheralNames = []
+      @peripheralNames = {}
       @discoveredPeripherals = []
+      @discoverMode = false
 
       @noble = require 'noble'
 
@@ -22,38 +22,76 @@ module.exports = (env) ->
       @framework.deviceManager.registerDeviceClass('BLEPresenceSensor', {
         configDef: deviceConfigDef.BLEPresenceSensor,
         createCallback: (config, lastState) =>
-          @addOnScan config.uuid
-          new BLEPresenceSensor(config, @, lastState)
+          device = new BLEPresenceSensor(config, @, lastState)
+          @addToScan config.uuid, device
+          return device
       })
 
-      @noble.on 'discover', (peripheral) =>
-        if peripheral.uuid in @devices && peripheral.uuid not in @discoveredPeripherals
-          @discoveredPeripherals.push peripheral.uuid
-          env.logger.debug 'Device found %s', peripheral.uuid
-          @emit 'discover', peripheral
-          @emit 'discover-' + peripheral.uuid, peripheral
-        else if peripheral.advertisement.localName in @peripheralNames && peripheral.uuid not in @discoveredPeripherals
-          #@discoveredPeripherals.push peripheral.uuid
-          env.logger.debug 'Device found %s %s', peripheral.advertisement.localName, peripheral.uuid
-          # ToDo: Auto discover
-          #@emit 'discover', peripheral
-        else if @deviceDebug && peripheral.state == 'disconnected' && peripheral.uuid not in @discoveredPeripherals
-          @discoveredPeripherals.push peripheral.uuid
-          peripheral.on 'disconnect', (error) =>
-            env.logger.debug 'Device %s disconnected', peripheral.uuid
-            if peripheral.uuid in @discoveredPeripherals
-              #env.logger.debug 'Removing %s from %s', peripheral.uuid, @discoveredPeripherals
-              @discoveredPeripherals.splice @discoveredPeripherals.indexOf(peripheral.uuid), 1
-              env.logger.debug 'Removed %s from %s', peripheral.uuid, @discoveredPeripherals
+      # Auto discover
+      @framework.deviceManager.on 'discover', (eventData) =>
+          @framework.deviceManager.discoverMessage 'pimatic-ble', 'Scanning for BLE devices'
+          @discoverMode = true
 
-          @stopScanning()
-          peripheral.connect (error) =>
-            if !error
-              env.logger.debug 'Device %s %s connected', peripheral.uuid, peripheral.advertisement.localName
+          @.on 'discover', (peripheral) =>
+            env.logger.debug 'Device %s found, state: %s', peripheral.uuid, peripheral.state
+            config = {
+              class: 'BLEPresenceSensor',
+              uuid: peripheral.uuid
+            }
+            @framework.deviceManager.discoveredDevice(
+              'pimatic-ble', 'Presence of ' + peripheral.uuid, config
+            )
+
+          setTimeout =>
+            @discoverMode = false
+          , 20000
+
+          @startScanning()
+
+      @noble.on 'discover', (peripheral) =>
+        if peripheral.uuid not in @discoveredPeripherals && peripheral.state == 'disconnected'
+          env.logger.debug 'Device found %s %s', peripheral.uuid, peripheral.advertisement.localName
+          if peripheral.uuid in @devices
+            @discoveredPeripherals.push peripheral.uuid
+            @emit 'discover-' + peripheral.uuid, peripheral
+          else if @discoverMode && @peripheralNames[peripheral.advertisement.localName]
+            #@discoveredPeripherals.push peripheral.uuid
+            @emit 'discover-' + @peripheralNames[peripheral.advertisement.localName], peripheral
+            @emit 'discover', peripheral
+          else if @discoverMode
+            @emit 'discover', peripheral
+          else if @deviceDebug && peripheral.advertisement.localName
+            @discoveredPeripherals.push peripheral.uuid
+            peripheral.on 'disconnect', (error) =>
+              env.logger.debug 'Device %s %s disconnected', peripheral.uuid, peripheral.advertisement.localName
+              if peripheral.uuid in @discoveredPeripherals
+                @discoveredPeripherals.splice @discoveredPeripherals.indexOf(peripheral.uuid), 1
+                env.logger.debug 'Removed %s from %s', peripheral.uuid, @discoveredPeripherals
+
+            env.logger.debug 'Trying to connect to %s %s', peripheral.uuid, peripheral.advertisement.localName
+            # Stop scanning for new devices when we're trying to connect to a device
+            @stopScanning()
+            #setTimeout =>
+            #  env.logger.debug 'peripheral.state: %s', peripheral.state
+            #  if peripheral.state == 'connecting'
+            #    #ToDo Cancel connection
+            #, 1000
+            peripheral.connect (error) =>
+              if !error
+                env.logger.debug 'Device %s %s connected', peripheral.uuid, peripheral.advertisement.localName
+                @readData peripheral
+                # Disconnect the device after 1 second
+                setTimeout =>
+                  if peripheral.state == 'connected'
+                    env.logger.debug 'Disconnecting device %s %s', peripheral.uuid, peripheral.advertisement.localName
+                    peripheral.disconnect()
+                , 1000
+              else
+                env.logger.debug 'Device %s %s connection failed: %s', peripheral.uuid, peripheral.advertisement.localName, error
+              # Continue scanning for new devices
               @startScanning()
-              @readData peripheral
-            else
-              env.logger.debug 'Device %s connection failed: %s', peripheral.uuid, error
+          #else if @deviceDebug
+          #  env.logger.debug peripheral
 
       @noble.on 'stateChange', (state) =>
         env.logger.debug 'stateChange %s', state
@@ -66,19 +104,19 @@ module.exports = (env) ->
         else
           @stopScanning()
 
-    registerName: (name) =>
+    registerName: (name, plugin) =>
       env.logger.debug 'Registering peripheral name %s', name
-      @peripheralNames.push name
+      @peripheralNames[name] = plugin
 
     startScanning: ->
       if @noble.state is 'poweredOn' && (@deviceDebug || @devices?.length > 0)
         env.logger.debug 'Scan for devices'
-        @noble.startScanning([], true)
+        @noble.startScanning()
 
     stopScanning: ->
       @noble.stopScanning()
 
-    addOnScan: (uuid) =>
+    addToScan: (uuid, device) =>
       env.logger.debug 'Adding device %s', uuid
       @devices.push uuid
 
@@ -86,8 +124,11 @@ module.exports = (env) ->
       if uuid in @devices
         env.logger.debug 'Removing device %s', uuid
         @devices.splice @devices.indexOf(uuid), 1
+      if uuid in @discoveredPeripherals
+        @discoveredPeripherals.splice @discoveredPeripherals.indexOf(uuid), 1
 
     readData: (peripheral) ->
+      env.logger.debug 'Reading data from %s %s', peripheral.uuid, peripheral.advertisement.localName
       peripheral.discoverSomeServicesAndCharacteristics null, [], (error, services, characteristics) =>
         characteristics.forEach (characteristic) =>
           switch characteristic.uuid
@@ -134,14 +175,15 @@ module.exports = (env) ->
       @plugin = plugin
 
       @_presence = lastState?.presence?.value or false
-      @_triggerAutoReset()
+      @_resetPresenceTimeout = setTimeout @_resetPresence, 60000 * 2
 
-      @plugin.on('discover-' + @uuid, (peripheral) =>
+      @plugin.on 'discover-' + @uuid, (peripheral) =>
         env.logger.debug 'Device %s found, state: %s', @name, peripheral.state
         @_setPresence true
+        clearTimeout @_resetPresenceTimeout
+        @_resetPresenceTimeout = setTimeout @_resetPresence, 60000 * 2
         if @plugin.deviceDebug
           @connect peripheral
-      )
 
       super()
 
@@ -156,15 +198,19 @@ module.exports = (env) ->
         @peripheral.connect (error) =>
           if !error
             env.logger.debug 'Device %s connected', @name
-            env.logger.debug '%s', peripheral.advertisement.localName
-            @plugin.startScanning()
             @readData @peripheral
+            # Disconnect the device after 1 second
+            setTimeout =>
+              if peripheral.state == 'connected'
+                env.logger.debug 'Disconnecting %s', @name
+                peripheral.disconnect()
+            , 1000
           else
             env.logger.debug 'Device %s connection failed: %s', @name, error
-
-      #setTimeout @peripheral.disconnect, 5000 * 2
+          @plugin.startScanning()
 
     readData: (peripheral) ->
+      env.logger.debug 'Reading data from %s', @name
       peripheral.discoverSomeServicesAndCharacteristics null, [], (error, services, characteristics) =>
         characteristics.forEach (characteristic) =>
           switch characteristic.uuid
@@ -192,11 +238,6 @@ module.exports = (env) ->
             env.logger.debug '(%s:%s) %s: %s', peripheral.uuid, characteristic.uuid, desc, data
         else
           env.logger.debug '(%s:%s) %s: error %s', peripheral.uuid, characteristic.uuid, desc, error
-
-    _triggerAutoReset: ->
-      if @config.autoReset and @_presence
-        clearTimeout @_resetPresenceTimeout
-        @_resetPresenceTimeout = setTimeout @_resetPresence, 60000 * 2
 
     _resetPresence: =>
       @_setPresence false
