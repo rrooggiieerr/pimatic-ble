@@ -10,4 +10,8 @@ module.exports = {
       description: "Device debug mode. Writes details of unrecognised devices to the pimatic log, if set to true."
       type: "boolean"
       default: false
+    scanInterval:
+      description: "Interval between scans"
+      type: "number"
+      default: 300000
 }

@@ -7,10 +7,11 @@
     "ble.coffee",
     "README.md",
     "ble-config-schema.coffee",
+    "device-config-schema.coffee",
     "LICENSE"
   ],
   "license": "GPL-2.0",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "homepage": "https://github.com/rrooggiieerr/pimatic-ble",
   "configSchema": "ble-config-schema.coffee",
   "dependencies": {
@@ -22,5 +23,15 @@
   "engines": {
     "node": ">0.8.x",
     "npm": ">1.1.x"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rrooggiieerr/pimatic-ble.git"
+  },
+  "keywords": [
+    "pimatic"
+  ],
+  "bugs": {
+    "url": "https://github.com/rrooggiieerr/pimatic-ble/issues"
   }
 }

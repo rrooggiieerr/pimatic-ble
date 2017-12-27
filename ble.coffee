@@ -7,6 +7,7 @@ module.exports = (env) ->
     init: (app, @framework, @config) =>
       @debug =  @config.debug
       @deviceDebug = @config.deviceDebug
+      @scanInterval = @config.scanInterval
       @devices = []
       @peripheralNames = {}
       @discoveredPeripherals = []
@@ -39,7 +40,7 @@ module.exports = (env) ->
               uuid: peripheral.uuid
             }
             @framework.deviceManager.discoveredDevice(
-              'pimatic-ble', 'Presence of ' + peripheral.uuid, config
+              'pimatic-ble', 'BLE Presence Sensor ' + peripheral.uuid, config
             )
 
           setTimeout =>
@@ -99,7 +100,7 @@ module.exports = (env) ->
           clearInterval @scanInterval
           @scanInterval = setInterval( =>
             @startScanning()
-          , 60000)
+          , @scanInterval)
           @startScanning()
         else
           @stopScanning()
@@ -157,7 +158,112 @@ module.exports = (env) ->
         else
           env.logger.debug '(%s:%s) %s: error %s', peripheral.uuid, characteristic.uuid, desc, error
 
-  class BLEPresenceSensor extends env.devices.PresenceSensor
+  class BLEDevice extends env.devices.Device
+    constructor: (config, plugin, lastState) ->
+      if !@config || Object.keys(@config).length == 0
+        @config = config
+      if !@plugin
+        @plugin = plugin
+
+      @id = @config.id
+      @name = @config.name
+      @uuid = @config.uuid
+      @interval = if @config.interval then @config.interval else config.interval
+      env.logger.debug 'Connection interval for device %s: %s', @name, @interval
+
+      @peripheral = null
+
+      @_presence = lastState?.presence?.value or false
+      @_resetPresenceTimeout = setTimeout @_resetPresence, @interval * 1.5
+
+      super()
+
+    connect: (peripheral) ->
+      if @_destroyed then return
+
+      if !peripheral then return
+      @peripheral = peripheral
+
+      @peripheral.on 'disconnect', (error) =>
+        if @_destroyed then return
+        env.logger.debug 'Device %s disconnected', @name
+        @onDisconnect()
+
+      # Set up reconnect interval
+      clearInterval @reconnectInterval
+      @reconnectInterval = setInterval( =>
+        @_connect()
+      , @interval)
+
+      @_connect(peripheral)
+
+    _connect: (peripheral) ->
+      if @_destroyed then return
+
+      if @peripheral
+        if @peripheral.state == 'disconnected'
+          env.logger.debug 'Trying to connect to %s', @name
+          @plugin.ble.stopScanning()
+          @peripheral.connect (error) =>
+            if !error
+              env.logger.debug 'Device %s connected', @name
+              @onConnect()
+            else
+              env.logger.debug 'Device %s connection failed: %s', @name, error
+              env.logger.debug 'Device state: %s', @peripheral.state
+              @peripheral.disconnect()
+            @plugin.ble.startScanning()
+        else if @peripheral.state == 'connected'
+          env.logger.debug 'Device %s still connected', @name
+          clearTimeout @_resetPresenceTimeout
+          @_resetPresenceTimeout = setTimeout @_resetPresence, @interval * 1.5
+        else if @peripheral.state != 'connecting' && @peripheral.state != 'connected'
+          env.logger.error 'Device %s not disconnected: %s', @name, @peripheral.state
+        else
+          env.logger.debug 'Device %s not disconnected: %s', @name, @peripheral.state
+
+    onConnect: () ->
+      @_setPresence true
+
+      # Reset the presence timeout
+      clearTimeout @_resetPresenceTimeout
+      @_resetPresenceTimeout = setTimeout @_resetPresence, @interval * 1.5
+
+      @readData @peripheral
+
+    onDisconnect: () ->
+
+    _setPresence: (value) ->
+      if @_presence is value then return
+      @_presence = value
+      @emit 'presence', value
+
+    _resetPresence: =>
+      @_setPresence false
+
+    readData: (peripheral) ->
+
+    destroy: ->
+      env.logger.debug 'Destroy %s', @name
+      @_destroyed = true
+
+      clearInterval(@_reconnectInterval)
+      clearTimeout(@_resetPresenceTimeout)
+
+      @emit('destroy', @)
+      @removeAllListeners('destroy')
+      @removeAllListeners(attrName) for attrName of @attributes
+
+      if @peripheral && @peripheral.state == 'connected'
+        @peripheral.disconnect()
+      @plugin.removeFromScan @uuid
+      super()
+
+    getPresence: -> Promise.resolve(@_presence)
+
+  env.devices.BLEDevice = BLEDevice
+
+  class BLEPresenceSensor extends BLEDevice
     attributes:
       presence:
         description: "Presence of the BLE device"
@@ -166,85 +272,25 @@ module.exports = (env) ->
 
     template: 'presence'
 
-    constructor: (@config, plugin, lastState) ->
-      @id = @config.id
-      @name = @config.name
-      @timeout = @config.timeout
-      @uuid = @config.uuid
-      @peripheral = null
-      @plugin = plugin
+    constructor: (@config, @plugin, lastState) ->
+      config = {}
+      config.interval = @plugin.scanInterval
 
-      @_presence = lastState?.presence?.value or false
-      @_resetPresenceTimeout = setTimeout @_resetPresence, 60000 * 2
+      @plugin.noble.on 'discover', (peripheral) =>
+        if peripheral.uuid == @uuid
+          env.logger.debug 'Device %s found, state: %s', @name, peripheral.state
+          @_setPresence true
 
-      @plugin.on 'discover-' + @uuid, (peripheral) =>
-        env.logger.debug 'Device %s found, state: %s', @name, peripheral.state
-        @_setPresence true
-        clearTimeout @_resetPresenceTimeout
-        @_resetPresenceTimeout = setTimeout @_resetPresence, 60000 * 2
-        if @plugin.deviceDebug
-          @connect peripheral
+          # Reset the presence timeout
+          clearTimeout @_resetPresenceTimeout
+          @_resetPresenceTimeout = setTimeout @_resetPresence, @interval * 1.5
 
-      super()
+      super(config, @plugin, lastState)
 
-    connect: (peripheral) ->
-      @peripheral = peripheral
-
-      @peripheral.on 'disconnect', (error) =>
-        env.logger.debug 'Device %s disconnected', @name
-
-      if @peripheral.state == 'disconnected'
-        @plugin.stopScanning()
-        @peripheral.connect (error) =>
-          if !error
-            env.logger.debug 'Device %s connected', @name
-            @readData @peripheral
-            # Disconnect the device after 1 second
-            setTimeout =>
-              if peripheral.state == 'connected'
-                env.logger.debug 'Disconnecting %s', @name
-                peripheral.disconnect()
-            , 1000
-          else
-            env.logger.debug 'Device %s connection failed: %s', @name, error
-          @plugin.startScanning()
-
-    readData: (peripheral) ->
-      env.logger.debug 'Reading data from %s', @name
-      peripheral.discoverSomeServicesAndCharacteristics null, [], (error, services, characteristics) =>
-        characteristics.forEach (characteristic) =>
-          switch characteristic.uuid
-            when '2a00'
-              @logValue peripheral, characteristic, 'Device Name'
-            when '2a24'
-              @logValue peripheral, characteristic, 'Model Number'
-            when '2a25'
-              @logValue peripheral, characteristic, 'Serial Number'
-            when '2a26'
-              @logValue peripheral, characteristic, 'Firmware Revision'
-            when '2a27'
-              @logValue peripheral, characteristic, 'Hardware Revision'
-            when '2a28'
-              @logValue peripheral, characteristic, 'Software Revision'
-            when '2a29'
-              @logValue peripheral, characteristic, 'Manufacturer Name'
-            else
-              @logValue peripheral, characteristic, 'Unknown'
-
-    logValue: (peripheral, characteristic, desc) ->
-      characteristic.read (error, data) =>
-        if !error
-          if data
-            env.logger.debug '(%s:%s) %s: %s', peripheral.uuid, characteristic.uuid, desc, data
-        else
-          env.logger.debug '(%s:%s) %s: error %s', peripheral.uuid, characteristic.uuid, desc, error
-
-    _resetPresence: =>
-      @_setPresence false
+    # Disable connecting to the device by overriding the connect function
+    connect: () ->
 
     destroy: ->
-      clearTimeout(@_resetPresenceTimeout)
-      @plugin.removeFromScan @uuid
       super()
 
   return new BLEPlugin
