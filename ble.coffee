@@ -169,6 +169,7 @@ module.exports = (env) ->
       @name = @config.name
       @uuid = @config.uuid
       @interval = if @config.interval then @config.interval else config.interval
+      @presence_timeout = if @config.presence_timeout then @config.presence_timeout else @interval * 1.5
       env.logger.debug 'Connection interval for device %s: %s', @name, @interval
 
       @peripheral = null
@@ -216,7 +217,7 @@ module.exports = (env) ->
         else if @peripheral.state == 'connected'
           env.logger.debug 'Device %s still connected', @name
           clearTimeout @_resetPresenceTimeout
-          @_resetPresenceTimeout = setTimeout @_resetPresence, @interval * 1.5
+          @_resetPresenceTimeout = setTimeout @_resetPresence, @presence_timeout
         else if @peripheral.state != 'connecting' && @peripheral.state != 'connected'
           env.logger.error 'Device %s not disconnected: %s', @name, @peripheral.state
         else
@@ -227,7 +228,7 @@ module.exports = (env) ->
 
       # Reset the presence timeout
       clearTimeout @_resetPresenceTimeout
-      @_resetPresenceTimeout = setTimeout @_resetPresence, @interval * 1.5
+      @_resetPresenceTimeout = setTimeout @_resetPresence, @presence_timeout
 
       @readData @peripheral
 
@@ -283,7 +284,7 @@ module.exports = (env) ->
 
           # Reset the presence timeout
           clearTimeout @_resetPresenceTimeout
-          @_resetPresenceTimeout = setTimeout @_resetPresence, @interval * 1.5
+          @_resetPresenceTimeout = setTimeout @_resetPresence, @presence_timeout
 
       super(config, @plugin, lastState)
 
