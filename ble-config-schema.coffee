@@ -14,4 +14,8 @@ module.exports = {
       description: "Interval between scans"
       type: "number"
       default: 300000
+    bluetoothInterface:
+      description: "The bluetooth interface"
+      type: "string"
+      default: "hci0"
 }
