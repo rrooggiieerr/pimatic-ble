@@ -15,9 +15,17 @@ module.exports = (env) ->
 
       @noble = require 'noble'
 
+      #Set Bluetooth Adapter
+      switch @bluetoothInterface
+        when 'hci0' then process.env.NOBLE_HCI_DEVICE_ID = 0
+        when 'hci1' then process.env.NOBLE_HCI_DEVICE_ID = 1
+        when 'hci2' then process.env.NOBLE_HCI_DEVICE_ID = 2
+        when 'hci3' then process.env.NOBLE_HCI_DEVICE_ID = 3
+        else process.env.NOBLE_HCI_DEVICE_ID = 0
+
       # Reset Bluetooth device
       exec = require('child_process').exec
-      exec '/bin/hciconfig hci0 reset'
+      exec 'sudo hciconfig '+ @bluetoothInterface + ' reset'
 
       deviceConfigDef = require('./device-config-schema')
       @framework.deviceManager.registerDeviceClass('BLEPresenceSensor', {
