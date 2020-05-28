@@ -8,5 +8,9 @@ module.exports = {
       uuid:
         description: "uuid of the BLE device"
         type: "string"
+      presence_timeout:
+        description: "Time until presence lost"
+        type: "number"
+        default: 10000
   }
 }
